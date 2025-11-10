@@ -15,10 +15,11 @@ fn prefix_sum_sequential(arr: &[u64]) -> Vec<u64> {
 }
 
 fn prefix_sum_parallel(arr: &[u64]) -> Vec<u64> {
-
+    // parallel prefix sum
     let n = arr.len();
     let chunk_size = (n + THREADS - 1) / THREADS;
     
+    // local prefix sums in parallel
     let local_sums: Vec<Vec<u64>> = arr
         .par_chunks(chunk_size)
         .map(|chunk| {
@@ -31,17 +32,18 @@ fn prefix_sum_parallel(arr: &[u64]) -> Vec<u64> {
         })
         .collect();
     
-
+    // compute offsets from last element of each chunk
     let mut offsets = vec![0u64; local_sums.len()];
     for i in 1..offsets.len() {
         offsets[i] = offsets[i - 1] + local_sums[i - 1].last().unwrap();
     }
-    
+
+    // add offsets to local sums in parallel
     let result: Vec<u64> = local_sums
-        .par_iter()
-        .enumerate()
-        .flat_map(|(i, local)| {
-            local.iter().map(move |&val| val + offsets[i])
+        .into_par_iter()
+        .zip(offsets.into_par_iter())
+        .flat_map_iter(|(local, offset)| {
+            local.into_iter().map(move |val| val + offset)
         })
         .collect();
     
@@ -68,6 +70,7 @@ fn main() {
     println!("Input value: {}", INPUT_VALUE);
     println!();
     
+    // Init input array
     let input: Vec<u64> = vec![INPUT_VALUE; N];
     
     // warm-up 
@@ -99,4 +102,5 @@ fn main() {
     //  speedup
     let speedup = seq_time.as_secs_f64() / par_time.as_secs_f64();
     println!("\nSpeedup: {:.2}x", speedup);
+    
 }

@@ -1,11 +1,14 @@
+
 use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-
+// problem sizes 
 const PROBLEM_SIZES: [usize; 5] = [256, 512, 1024, 1536, 2048];
+// thread counts to test
 const THREAD_COUNTS: [usize; 5] = [1, 2, 4, 8, 16];
 
+// row-major order
 type Matrix = Vec<Vec<f64>>;
 
 fn create_matrix(n: usize, init_value: f64) -> Matrix {
@@ -28,24 +31,6 @@ fn matrix_multiply_sequential(a: &Matrix, b: &Matrix, n: usize) -> Matrix {
     c
 }
 
-fn matrix_multiply_parallel(a: &Matrix, b: &Matrix, n: usize) -> Matrix {
-    let mut c = create_matrix(n, 0.0);
-    
-    c.par_iter_mut()
-        .enumerate()
-        .for_each(|(i, row)| {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += a[i][k] * b[k][j];
-                }
-                row[j] = sum;
-            }
-        });
-    
-    c
-}
-
 fn verify_results(sequential: &Matrix, parallel: &Matrix, n: usize) -> bool {
     const EPSILON: f64 = 1e-6;
     
@@ -59,37 +44,65 @@ fn verify_results(sequential: &Matrix, parallel: &Matrix, n: usize) -> bool {
     true
 }
 
+fn matrix_multiply_parallel_with_pool(
+    pool: &rayon::ThreadPool, 
+    a: &Matrix, 
+    b: &Matrix, 
+    n: usize
+) -> Matrix {
+    let mut c = create_matrix(n, 0.0);
+    
+    pool.install(|| {
+        c.par_iter_mut()
+            .enumerate()
+            .for_each(|(i, row)| {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for k in 0..n {
+                        sum += a[i][k] * b[k][j];
+                    }
+                    row[j] = sum;
+                }
+            });
+    });
+    
+    c
+}
+
 fn run_benchmark(n: usize, threads: usize) -> (f64, f64, f64) {
-    rayon::ThreadPoolBuilder::new()
+    // Create a custom thread pool for this benchmark
+    let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
-        .build_global()
+        .build()
         .unwrap();
     
+    // init matrices
     let a = create_matrix(n, 1.0);
     let b = create_matrix(n, 2.0);
     
+    // warm-up 
     if n >= 256 {
         let warm_n = 128;
         let warm_a = create_matrix(warm_n, 1.0);
         let warm_b = create_matrix(warm_n, 2.0);
-        let _ = matrix_multiply_parallel(&warm_a, &warm_b, warm_n);
+        let _ = matrix_multiply_parallel_with_pool(&pool, &warm_a, &warm_b, warm_n);
     }
     
-
+    // sequential 
     let seq_time = if threads == 1 {
         let start = Instant::now();
         let _ = matrix_multiply_sequential(&a, &b, n);
         start.elapsed().as_secs_f64()
     } else {
-        0.0 // Skip sequential for multi-threaded runs
+        0.0 
     };
     
     // parallel version
     let start = Instant::now();
-    let result_parallel = matrix_multiply_parallel(&a, &b, n);
+    let result_parallel = matrix_multiply_parallel_with_pool(&pool, &a, &b, n);
     let par_time = start.elapsed().as_secs_f64();
     
-    // Verify correctness (only when we have sequential result)
+    // correctness 
     if threads == 1 {
         let result_sequential = matrix_multiply_sequential(&a, &b, n);
         if !verify_results(&result_sequential, &result_parallel, n) {
@@ -97,13 +110,10 @@ fn run_benchmark(n: usize, threads: usize) -> (f64, f64, f64) {
         }
     }
     
-    // efficiency
     let efficiency = if threads == 1 {
         1.0
     } else {
-        // need T=1 time for this problem size to calculate efficiency
-        // for now calculate relative efficiency
-        0.0 //  calculated later with baseline
+        0.0 
     };
     
     (seq_time, par_time, efficiency)
@@ -115,12 +125,14 @@ fn run_scalability_study() {
     println!("Testing thread counts: {:?}", THREAD_COUNTS);
     println!();
     
+    //  baseline 
     let mut baselines: Vec<f64> = Vec::new();
     
     for &n in &PROBLEM_SIZES {
-        println!("\n{'=':.>60}");
+        println!();
+        println!("{}", "=".repeat(60));
         println!("Problem Size: n = {}", n);
-        println!("{'=':.>60}");
+        println!("{}", "=".repeat(60));
         
         let mut baseline_time = 0.0;
         
@@ -128,7 +140,7 @@ fn run_scalability_study() {
             print!("Threads = {:2} ... ", threads);
             std::io::Write::flush(&mut std::io::stdout()).unwrap();
             
-            let (seq_time, par_time, _) = run_benchmark(n, threads);
+            let (_seq_time, par_time, _) = run_benchmark(n, threads);
             
             if threads == 1 {
                 baseline_time = par_time;
@@ -144,12 +156,14 @@ fn run_scalability_study() {
         baselines.push(baseline_time);
     }
     
-    println!("\n\n{'=':.>60}");
+    println!();
+    println!();
+    println!("{}", "=".repeat(60));
     println!("Summary: Execution Times (seconds)");
-    println!("{'=':.>60}");
+    println!("{}", "=".repeat(60));
     println!("{:>8} {:>10} {:>10} {:>10} {:>10} {:>10}", 
              "n \\ T", "1", "2", "4", "8", "16");
-    println!("{:-<60}", "");
+    println!("{}", "-".repeat(60));
     
     for &n in &PROBLEM_SIZES {
         print!("{:>8}", n);
@@ -160,9 +174,10 @@ fn run_scalability_study() {
         println!();
     }
     
-    println!("\n{'=':.>60}");
+    println!();
+    println!("{}", "=".repeat(60));
     println!("Scalability Metrics");
-    println!("{'=':.>60}");
+    println!("{}", "=".repeat(60));
     println!("Strong Scaling: Fixed problem size, varying threads");
     println!("Efficiency = Speedup / Number of Threads");
     println!("Ideal efficiency = 100% (linear scaling)");
@@ -175,7 +190,7 @@ fn run_scalability_study() {
 }
 
 fn main() {
-
+    // if specific configuration
     let args: Vec<String> = env::args().collect();
     
     if args.len() == 3 {
@@ -183,7 +198,7 @@ fn main() {
         let threads: usize = args[2].parse().expect("Invalid thread count");
         
         println!("Running single benchmark: n={}, threads={}", n, threads);
-        let (seq_time, par_time, _) = run_benchmark(n, threads);
+        let (_seq_time, par_time, _) = run_benchmark(n, threads);
         
         if threads == 1 {
             println!("Time: {:.6}s", par_time);
@@ -191,6 +206,7 @@ fn main() {
             println!("Parallel time: {:.6}s", par_time);
         }
     } else {
+        // run all
         run_scalability_study();
     }
 }
