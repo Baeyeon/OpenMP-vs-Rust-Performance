@@ -12,6 +12,10 @@ name = "matrix_multiply"
 path = "src/scalability/matrix_multiply.rs"
 
 [[bin]]
+name = "runtime_overhead"
+path = "src/runtime_overhead/runtime_overhead.rs"
+
+[[bin]]
 name = "run_all_benchmarks"
 path = "src/main.rs"
 
