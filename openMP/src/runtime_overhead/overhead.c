@@ -2,17 +2,25 @@
 // Measures:
 //   1) Parallel region overhead: repeated `#pragma omp parallel {}`
 //   2) Barrier overhead: single parallel region with repeated `#pragma omp barrier`
+//   3) Critical section overhead: `#pragma omp critical` (mutex equivalent)
+//   4) Atomic operations overhead: `#pragma omp atomic`
 //
 // Usage:
 //   ./overhead_openmp <T> <R>
 //   T = number of threads (e.g., 1,2,4,8,16)
 //   R = number of repetitions (e.g., 100000)
 //
-// Output: CSV-style lines, e.g.:
-//   overhead,openmp,T=8,R=100000,parallel_total,0.012345,sec
-//   overhead,openmp,T=8,R=100000,parallel_per,1.234e-07,sec
-//   overhead,openmp,T=8,R=100000,barrier_total,0.034567,sec
-//   overhead,openmp,T=8,R=100000,barrier_per,3.456e-07,sec
+// Output: CSV-style lines with unified units (ms for total, ns for per-op), e.g.:
+//   overhead,openmp,T=8,R=100000,parallel_total,12.34,ms
+//   overhead,openmp,T=8,R=100000,parallel_per,123.45,ns
+//   overhead,openmp,T=8,R=100000,barrier_total,34.56,ms
+//   overhead,openmp,T=8,R=100000,barrier_per,345.67,ns
+//   overhead,openmp,T=8,R=100000,critical_total,45.67,ms
+//   overhead,openmp,T=8,R=100000,critical_per,567.89,ns
+//   overhead,openmp,T=8,R=100000,atomic_total,23.45,ms
+//   overhead,openmp,T=8,R=100000,atomic_per,234.56,ns
+//
+// Note: All "per" values are per-operation costs normalized by (iterations * threads)
 
 #include <omp.h>
 #include <stdio.h>
@@ -68,17 +76,60 @@ int main(int argc, char** argv) {
     }
     t1 = omp_get_wtime();
     double time_barrier = t1 - t0;
-    double per_barrier  = time_barrier / (double)R;
+    double per_barrier  = time_barrier / (double)(R * T);
 
-    // CSV-style output, easy to parse in Python/R
-    printf("overhead,openmp,T=%d,R=%lld,parallel_total,%.9f,sec\n",
-           T, R, time_parallel);
-    printf("overhead,openmp,T=%d,R=%lld,parallel_per,%.9e,sec\n",
-           T, R, per_parallel);
-    printf("overhead,openmp,T=%d,R=%lld,barrier_total,%.9f,sec\n",
-           T, R, time_barrier);
-    printf("overhead,openmp,T=%d,R=%lld,barrier_per,%.9e,sec\n",
-           T, R, per_barrier);
+    // ----------------------------
+    // Test 3: Critical section overhead (mutex equivalent)
+    // ----------------------------
+    long long counter = 0;
+    t0 = omp_get_wtime();
+    #pragma omp parallel
+    {
+        for (long long r = 0; r < R; ++r) {
+            #pragma omp critical
+            {
+                counter++;
+            }
+        }
+    }
+    t1 = omp_get_wtime();
+    double time_critical = t1 - t0;
+    double per_critical = time_critical / (double)(R * T);
+
+    // ----------------------------
+    // Test 4: Atomic operations overhead
+    // ----------------------------
+    long long atomic_counter = 0;
+    t0 = omp_get_wtime();
+    #pragma omp parallel
+    {
+        for (long long r = 0; r < R; ++r) {
+            #pragma omp atomic
+            atomic_counter++;
+        }
+    }
+    t1 = omp_get_wtime();
+    double time_atomic = t1 - t0;
+    double per_atomic = time_atomic / (double)(R * T);
+
+    // Unified output format (milliseconds for total, nanoseconds for per-op)
+    // Matches Rust output format for easy comparison
+    printf("overhead,openmp,T=%d,R=%lld,parallel_total,%.2f,ms\n",
+           T, R, time_parallel * 1000.0);
+    printf("overhead,openmp,T=%d,R=%lld,parallel_per,%.2f,ns\n",
+           T, R, per_parallel * 1e9);
+    printf("overhead,openmp,T=%d,R=%lld,barrier_total,%.2f,ms\n",
+           T, R, time_barrier * 1000.0);
+    printf("overhead,openmp,T=%d,R=%lld,barrier_per,%.2f,ns\n",
+           T, R, per_barrier * 1e9);
+    printf("overhead,openmp,T=%d,R=%lld,critical_total,%.2f,ms\n",
+           T, R, time_critical * 1000.0);
+    printf("overhead,openmp,T=%d,R=%lld,critical_per,%.2f,ns\n",
+           T, R, per_critical * 1e9);
+    printf("overhead,openmp,T=%d,R=%lld,atomic_total,%.2f,ms\n",
+           T, R, time_atomic * 1000.0);
+    printf("overhead,openmp,T=%d,R=%lld,atomic_per,%.2f,ns\n",
+           T, R, per_atomic * 1e9);
 
     return 0;
 }

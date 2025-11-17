@@ -1,180 +1,179 @@
 // Runtime Overhead Benchmarks
 // Measures the cost of thread operations and synchronization primitives
 
+use rayon;
 use std::sync::{Arc, Barrier, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
 use std::time::Instant;
 
 const THREAD_COUNTS: &[usize] = &[1, 2, 4, 8, 16];
 const ITERATIONS: &[usize] = &[10_000, 25_000, 50_000, 75_000, 100_000];
 
 pub fn run_all_benchmarks() {
-    println!("Runtime Overhead Benchmarks");
-    println!("===========================\n");
-    
+    // CSV output format matching OpenMP for easy comparison and data processing
     spawn_join_benchmark();
-    println!();
     barrier_benchmark();
-    println!();
     mutex_benchmark();
-    println!();
     atomic_benchmark();
 }
 
-/// 1: Thread Spawn + Join
-/// overhead of creating and joining threads
+/// 1: Parallel Scope (Rayon)
+/// overhead of parallel regions using Rayon thread pool (comparable to OpenMP)
+/// Measures cost per parallel scope creation (like OpenMP's parallel region)
 fn spawn_join_benchmark() {
-    println!("1. Spawn + Join Benchmark");
-    println!("   Measures thread creation and termination overhead");
-    println!("   ------------------------------------------------");
-    println!("   Threads | Iterations | Total Time (ms) | Avg Cost per Op (ns)");
-    println!("   --------|------------|-----------------|---------------------");
-    
     for &num_threads in THREAD_COUNTS {
         for &iterations in ITERATIONS {
+            // Create thread pool with specific size (like OpenMP's omp_set_num_threads)
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .unwrap();
+            
             let start = Instant::now();
             
-            for _ in 0..iterations {
-                let handles: Vec<_> = (0..num_threads)
-                    .map(|_| {
-                        thread::spawn(|| {
-                            // Minimal work to isolate spawn/join overhead
-                            let _ = 1 + 1;
-                        })
-                    })
-                    .collect();
-                
-                for handle in handles {
-                    handle.join().unwrap();
+            pool.install(|| {
+                for _ in 0..iterations {
+                    // Use rayon::scope - creates parallel region like OpenMP
+                    rayon::scope(|s| {
+                        for _ in 0..num_threads {
+                            s.spawn(|_| {
+                                // Empty body - purely measure parallel region overhead
+                                // (matches OpenMP's empty parallel region)
+                            });
+                        }
+                    });
                 }
-            }
+            });
             
             let duration = start.elapsed();
-            let total_ops = iterations * num_threads;
-            let avg_ns = duration.as_nanos() as f64 / total_ops as f64;
+            // Divide by iterations only (not iterations * threads) to match OpenMP
+            // This measures cost per parallel scope, not per task spawn
+            let total_ms = duration.as_secs_f64() * 1000.0;
+            let avg_ns = duration.as_nanos() as f64 / iterations as f64;
             
-            println!("   {:7} | {:10} | {:15.2} | {:20.2}",
-                num_threads, iterations, duration.as_secs_f64() * 1000.0, avg_ns);
+            println!("overhead,rust,T={},R={},parallel_total,{:.2},ms",
+                num_threads, iterations, total_ms);
+            println!("overhead,rust,T={},R={},parallel_per,{:.2},ns",
+                num_threads, iterations, avg_ns);
         }
     }
 }
 
 /// 2: Barrier Synchronization
-/// overhead of barrier synchronization
+/// overhead of barrier synchronization using Rayon thread pool
 fn barrier_benchmark() {
-    println!("2. Barrier Synchronization Benchmark");
-    println!("   Measures barrier wait overhead");
-    println!("   ------------------------------------------------");
-    println!("   Threads | Iterations | Total Time (ms) | Avg Cost per Op (ns)");
-    println!("   --------|------------|-----------------|---------------------");
-    
     for &num_threads in THREAD_COUNTS {
         for &iterations in ITERATIONS {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .unwrap();
+            
             let barrier = Arc::new(Barrier::new(num_threads));
             let start = Instant::now();
             
-            let handles: Vec<_> = (0..num_threads)
-                .map(|_| {
-                    let barrier_clone = Arc::clone(&barrier);
-                    thread::spawn(move || {
-                        for _ in 0..iterations {
-                            barrier_clone.wait();
-                        }
-                    })
-                })
-                .collect();
-            
-            for handle in handles {
-                handle.join().unwrap();
-            }
+            pool.install(|| {
+                rayon::scope(|s| {
+                    for _ in 0..num_threads {
+                        let barrier_clone = Arc::clone(&barrier);
+                        s.spawn(move |_| {
+                            for _ in 0..iterations {
+                                barrier_clone.wait();
+                            }
+                        });
+                    }
+                });
+            });
             
             let duration = start.elapsed();
             let total_ops = iterations * num_threads;
+            let total_ms = duration.as_secs_f64() * 1000.0;
             let avg_ns = duration.as_nanos() as f64 / total_ops as f64;
             
-            println!("   {:7} | {:10} | {:15.2} | {:20.2}",
-                num_threads, iterations, duration.as_secs_f64() * 1000.0, avg_ns);
+            println!("overhead,rust,T={},R={},barrier_total,{:.2},ms",
+                num_threads, iterations, total_ms);
+            println!("overhead,rust,T={},R={},barrier_per,{:.2},ns",
+                num_threads, iterations, avg_ns);
         }
     }
 }
 
 /// 3: Mutex Lock/Unlock
-/// overhead of mutex operations
+/// overhead of mutex operations using Rayon thread pool
 fn mutex_benchmark() {
-    println!("3. Mutex Lock/Unlock Benchmark");
-    println!("   Measures mutex contention overhead");
-    println!("   ------------------------------------------------");
-    println!("   Threads | Iterations | Total Time (ms) | Avg Cost per Op (ns)");
-    println!("   --------|------------|-----------------|---------------------");
-    
     for &num_threads in THREAD_COUNTS {
         for &iterations in ITERATIONS {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .unwrap();
+            
             let counter = Arc::new(Mutex::new(0u64));
             let start = Instant::now();
             
-            let handles: Vec<_> = (0..num_threads)
-                .map(|_| {
-                    let counter_clone = Arc::clone(&counter);
-                    thread::spawn(move || {
-                        for _ in 0..iterations {
-                            let mut val = counter_clone.lock().unwrap();
-                            *val += 1;
-                            // lock is automatically released here
-                        }
-                    })
-                })
-                .collect();
-            
-            for handle in handles {
-                handle.join().unwrap();
-            }
+            pool.install(|| {
+                rayon::scope(|s| {
+                    for _ in 0..num_threads {
+                        let counter_clone = Arc::clone(&counter);
+                        s.spawn(move |_| {
+                            for _ in 0..iterations {
+                                let mut val = counter_clone.lock().unwrap();
+                                *val += 1;
+                                // lock is automatically released here
+                            }
+                        });
+                    }
+                });
+            });
             
             let duration = start.elapsed();
             let total_ops = iterations * num_threads;
+            let total_ms = duration.as_secs_f64() * 1000.0;
             let avg_ns = duration.as_nanos() as f64 / total_ops as f64;
             
-            println!("   {:7} | {:10} | {:15.2} | {:20.2}",
-                num_threads, iterations, duration.as_secs_f64() * 1000.0, avg_ns);
+            println!("overhead,rust,T={},R={},mutex_total,{:.2},ms",
+                num_threads, iterations, total_ms);
+            println!("overhead,rust,T={},R={},mutex_per,{:.2},ns",
+                num_threads, iterations, avg_ns);
         }
     }
 }
 
 /// 4: Atomic Operations
-/// overhead of atomic fetch_add operations
+/// overhead of atomic fetch_add operations using Rayon thread pool
 fn atomic_benchmark() {
-    println!("4. Atomic Operations Benchmark");
-    println!("   Measures atomic fetch_add overhead");
-    println!("   ------------------------------------------------");
-    println!("   Threads | Iterations | Total Time (ms) | Avg Cost per Op (ns)");
-    println!("   --------|------------|-----------------|---------------------");
-    
     for &num_threads in THREAD_COUNTS {
         for &iterations in ITERATIONS {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .unwrap();
+            
             let counter = Arc::new(AtomicU64::new(0));
             let start = Instant::now();
             
-            let handles: Vec<_> = (0..num_threads)
-                .map(|_| {
-                    let counter_clone = Arc::clone(&counter);
-                    thread::spawn(move || {
-                        for _ in 0..iterations {
-                            counter_clone.fetch_add(1, Ordering::SeqCst);
-                        }
-                    })
-                })
-                .collect();
-            
-            for handle in handles {
-                handle.join().unwrap();
-            }
+            pool.install(|| {
+                rayon::scope(|s| {
+                    for _ in 0..num_threads {
+                        let counter_clone = Arc::clone(&counter);
+                        s.spawn(move |_| {
+                            for _ in 0..iterations {
+                                counter_clone.fetch_add(1, Ordering::SeqCst);
+                            }
+                        });
+                    }
+                });
+            });
             
             let duration = start.elapsed();
             let total_ops = iterations * num_threads;
+            let total_ms = duration.as_secs_f64() * 1000.0;
             let avg_ns = duration.as_nanos() as f64 / total_ops as f64;
             
-            println!("   {:7} | {:10} | {:15.2} | {:20.2}",
-                num_threads, iterations, duration.as_secs_f64() * 1000.0, avg_ns);
+            println!("overhead,rust,T={},R={},atomic_total,{:.2},ms",
+                num_threads, iterations, total_ms);
+            println!("overhead,rust,T={},R={},atomic_per,{:.2},ns",
+                num_threads, iterations, avg_ns);
         }
     }
 }
@@ -182,6 +181,7 @@ fn atomic_benchmark() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
     
     #[test]
     fn test_spawn_join() {
