@@ -8,8 +8,16 @@ name = "prefix_sum"
 path = "src/programmability/prefix_sum.rs"
 
 [[bin]]
+name = "histogram"
+path = "src/controllability/histogram.rs"
+
+[[bin]]
 name = "matrix_multiply"
 path = "src/scalability/matrix_multiply.rs"
+
+[[bin]]
+name = "runtime_overhead"
+path = "src/runtime_overhead/runtime_overhead.rs"
 
 [[bin]]
 name = "run_all_benchmarks"
@@ -20,6 +28,8 @@ rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }
+rand = "0.8"
+core_affinity = "0.8"
 
 [profile.release]
 opt-level = 3
