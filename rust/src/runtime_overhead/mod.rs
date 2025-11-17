@@ -38,7 +38,6 @@ fn spawn_join_benchmark() {
                         for _ in 0..num_threads {
                             s.spawn(|_| {
                                 // Empty body - purely measure parallel region overhead
-                                // (matches OpenMP's empty parallel region)
                             });
                         }
                     });
@@ -46,14 +45,13 @@ fn spawn_join_benchmark() {
             });
             
             let duration = start.elapsed();
-            // Divide by iterations only (not iterations * threads) to match OpenMP
-            // This measures cost per parallel scope, not per task spawn
+            // cost per parallel scope,
             let total_ms = duration.as_secs_f64() * 1000.0;
             let avg_ns = duration.as_nanos() as f64 / iterations as f64;
             
-            println!("overhead,rust,T={},R={},parallel_total,{:.2},ms",
+            println!("overhead,rust,T={},R={},parallel_total,{:.6},ms",
                 num_threads, iterations, total_ms);
-            println!("overhead,rust,T={},R={},parallel_per,{:.2},ns",
+            println!("overhead,rust,T={},R={},parallel_per,{:.3},ns",
                 num_threads, iterations, avg_ns);
         }
     }
@@ -90,9 +88,9 @@ fn barrier_benchmark() {
             let total_ms = duration.as_secs_f64() * 1000.0;
             let avg_ns = duration.as_nanos() as f64 / total_ops as f64;
             
-            println!("overhead,rust,T={},R={},barrier_total,{:.2},ms",
+            println!("overhead,rust,T={},R={},barrier_total,{:.6},ms",
                 num_threads, iterations, total_ms);
-            println!("overhead,rust,T={},R={},barrier_per,{:.2},ns",
+            println!("overhead,rust,T={},R={},barrier_per,{:.3},ns",
                 num_threads, iterations, avg_ns);
         }
     }
@@ -131,9 +129,9 @@ fn mutex_benchmark() {
             let total_ms = duration.as_secs_f64() * 1000.0;
             let avg_ns = duration.as_nanos() as f64 / total_ops as f64;
             
-            println!("overhead,rust,T={},R={},mutex_total,{:.2},ms",
+            println!("overhead,rust,T={},R={},mutex_total,{:.6},ms",
                 num_threads, iterations, total_ms);
-            println!("overhead,rust,T={},R={},mutex_per,{:.2},ns",
+            println!("overhead,rust,T={},R={},mutex_per,{:.3},ns",
                 num_threads, iterations, avg_ns);
         }
     }
@@ -170,9 +168,9 @@ fn atomic_benchmark() {
             let total_ms = duration.as_secs_f64() * 1000.0;
             let avg_ns = duration.as_nanos() as f64 / total_ops as f64;
             
-            println!("overhead,rust,T={},R={},atomic_total,{:.2},ms",
+            println!("overhead,rust,T={},R={},atomic_total,{:.6},ms",
                 num_threads, iterations, total_ms);
-            println!("overhead,rust,T={},R={},atomic_per,{:.2},ns",
+            println!("overhead,rust,T={},R={},atomic_per,{:.3},ns",
                 num_threads, iterations, avg_ns);
         }
     }

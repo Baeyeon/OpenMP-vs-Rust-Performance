@@ -112,23 +112,23 @@ int main(int argc, char** argv) {
     double time_atomic = t1 - t0;
     double per_atomic = time_atomic / (double)(R * T);
 
-    // Unified output format (milliseconds for total, nanoseconds for per-op)
+    // Unified output format with high precision (milliseconds for total, nanoseconds for per-op)
     // Matches Rust output format for easy comparison
-    printf("overhead,openmp,T=%d,R=%lld,parallel_total,%.2f,ms\n",
+    printf("overhead,openmp,T=%d,R=%lld,parallel_total,%.6f,ms\n",
            T, R, time_parallel * 1000.0);
-    printf("overhead,openmp,T=%d,R=%lld,parallel_per,%.2f,ns\n",
+    printf("overhead,openmp,T=%d,R=%lld,parallel_per,%.3f,ns\n",
            T, R, per_parallel * 1e9);
-    printf("overhead,openmp,T=%d,R=%lld,barrier_total,%.2f,ms\n",
+    printf("overhead,openmp,T=%d,R=%lld,barrier_total,%.6f,ms\n",
            T, R, time_barrier * 1000.0);
-    printf("overhead,openmp,T=%d,R=%lld,barrier_per,%.2f,ns\n",
+    printf("overhead,openmp,T=%d,R=%lld,barrier_per,%.3f,ns\n",
            T, R, per_barrier * 1e9);
-    printf("overhead,openmp,T=%d,R=%lld,critical_total,%.2f,ms\n",
+    printf("overhead,openmp,T=%d,R=%lld,critical_total,%.6f,ms\n",
            T, R, time_critical * 1000.0);
-    printf("overhead,openmp,T=%d,R=%lld,critical_per,%.2f,ns\n",
+    printf("overhead,openmp,T=%d,R=%lld,critical_per,%.3f,ns\n",
            T, R, per_critical * 1e9);
-    printf("overhead,openmp,T=%d,R=%lld,atomic_total,%.2f,ms\n",
+    printf("overhead,openmp,T=%d,R=%lld,atomic_total,%.6f,ms\n",
            T, R, time_atomic * 1000.0);
-    printf("overhead,openmp,T=%d,R=%lld,atomic_per,%.2f,ns\n",
+    printf("overhead,openmp,T=%d,R=%lld,atomic_per,%.3f,ns\n",
            T, R, per_atomic * 1e9);
 
     return 0;
