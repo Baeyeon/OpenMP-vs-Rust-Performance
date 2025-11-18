@@ -1,292 +1,322 @@
-// Histogram Benchmark - Controllability Comparison
-// Tests programmer control over thread-to-core assignment and variable sharing/privacy
+// Histogram benchmark for "amount of control" (Rust/Rayon version)
+// Strategies:
+//   1) Rayon-Atomic: single shared histogram with atomic operations
+//   2) Rayon-Local: thread-local histograms + automatic reduction
+//
+// Usage:
+//   ./histogram <strategy> <dist> <N> <T> [grain] [pad] [affinity]
+//   strategy: atomic | local
+//   dist:     uniform | skewed
+//   N:        number of elements (e.g., 10000000)
+//   T:        number of threads (e.g., 1,2,4,8,16)
+//   grain:    chunk size per task (0 = auto)
+//   pad:      0 | 1 (atomic only; 1 = padded bins)
+//   affinity: 0 | 1 (0 = no pinning, 1 = pin threads to cores)
+//
+// Output (CSV-style):
+//   hist,rayon,strategy=atomic,dist=uniform,N=10000000,T=8,grain=0,pad=0,affinity=0,time,0.123456,sec
+//   hist,rayon,strategy=atomic,dist=uniform,N=10000000,T=8,grain=0,pad=0,affinity=0,correct,1,boolean
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
+use rayon::prelude::*;
+use std::env;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
-use rand::Rng;
 
-const PROBLEM_SIZES: &[usize] = &[10_000_000, 100_000_000]; // 10M, 100M
-const THREAD_COUNTS: &[usize] = &[1, 2, 4, 8, 16];
-const NUM_BINS: usize = 256;
+const BINS: usize = 256;
+
+#[repr(align(64))]
+struct PaddedAtomicU64(AtomicU64);
+
+// Global counter for thread ID assignment when using affinity
+static THREAD_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+// Thread affinity: Pin thread to specific core
+fn set_thread_affinity() -> usize {
+    let thread_id = THREAD_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let core_ids_result = core_affinity::get_core_ids();
+    
+    if let Some(core_ids) = core_ids_result {
+        if thread_id < core_ids.len() {
+            core_affinity::set_for_current(core_ids[thread_id]);
+        }
+    }
+    
+    thread_id
+}
+
+// Simple LCG RNG (deterministic, matching OpenMP)
+fn lcg_next(x: u32) -> u32 {
+    x.wrapping_mul(1664525u32).wrapping_add(1013904223u32)
+}
+
+// Generate uniform distribution [0,255]
+fn gen_uniform(n: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(n);
+    let mut x = 123456789u32;
+    for _ in 0..n {
+        x = lcg_next(x);
+        data.push((x & 0xFF) as u8);
+    }
+    data
+}
+
+// Generate skewed distribution: ~80% in first 20% bins (0..51)
+fn gen_skewed(n: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(n);
+    let hot_bins = (BINS as f64 * 0.2) as u8; // 51
+    let threshold = (0.8 * u32::MAX as f64) as u32; // ~80%
+    let mut x = 987654321u32;
+
+    for _ in 0..n {
+        x = lcg_next(x);
+        let val = if x < threshold {
+            // hot range
+            (x % hot_bins as u32) as u8
+        } else {
+            // cold range
+            let mut v = (x & 0xFF) as u8;
+            if v < hot_bins {
+                v += hot_bins;
+            }
+            v
+        };
+        data.push(val);
+    }
+    data
+}
+
+// Strategy 1: Rayon Atomic (Shared Histogram)
+// Adds:
+//   - grain: chunk size (0 = auto)
+//   - pad:   if true, use cache-line padded bins
+//   - use_affinity: if true, pin threads to cores
+fn hist_atomic(data: &[u8], num_threads: usize, grain: usize, pad: bool, use_affinity: bool) -> (f64, Vec<u64>) {
+    // Reset counter for affinity
+    if use_affinity {
+        THREAD_COUNTER.store(0, Ordering::SeqCst);
+    }
+    
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .start_handler(move |_| {
+            if use_affinity {
+                set_thread_affinity();
+            }
+        })
+        .build()
+        .unwrap();
+
+    let start = Instant::now();
+
+    let result: Vec<u64> = if pad {
+        // Padded atomic bins to reduce false sharing
+        let histogram: Vec<PaddedAtomicU64> = (0..BINS)
+            .map(|_| PaddedAtomicU64(AtomicU64::new(0)))
+            .collect();
+
+        pool.install(|| {
+            if grain > 0 {
+                data.par_chunks(grain).for_each(|chunk| {
+                    for &val in chunk {
+                        histogram[val as usize]
+                            .0
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+            } else {
+                data.par_iter().for_each(|&val| {
+                    histogram[val as usize]
+                        .0
+                        .fetch_add(1, Ordering::Relaxed);
+                });
+            }
+        });
+
+        histogram
+            .iter()
+            .map(|x| x.0.load(Ordering::Relaxed))
+            .collect()
+    } else {
+        // Original contiguous atomic bins
+        let histogram: Vec<AtomicU64> = (0..BINS)
+            .map(|_| AtomicU64::new(0))
+            .collect();
+
+        pool.install(|| {
+            if grain > 0 {
+                data.par_chunks(grain).for_each(|chunk| {
+                    for &val in chunk {
+                        histogram[val as usize].fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+            } else {
+                data.par_iter().for_each(|&val| {
+                    histogram[val as usize].fetch_add(1, Ordering::Relaxed);
+                });
+            }
+        });
+
+        histogram
+            .iter()
+            .map(|x| x.load(Ordering::Relaxed))
+            .collect()
+    };
+
+    let elapsed = start.elapsed().as_secs_f64();
+    (elapsed, result)
+}
+
+// Strategy 2: Rayon Local (Thread-Local Histograms)
+// Adds:
+//   - grain: chunk size (0 = auto: roughly N / T)
+//   - use_affinity: if true, pin threads to cores
+fn hist_local(data: &[u8], num_threads: usize, grain: usize, use_affinity: bool) -> (f64, Vec<u64>) {
+    // Reset counter for affinity
+    if use_affinity {
+        THREAD_COUNTER.store(0, Ordering::SeqCst);
+    }
+    
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .start_handler(move |_| {
+            if use_affinity {
+                set_thread_affinity();
+            }
+        })
+        .build()
+        .unwrap();
+
+    let start = Instant::now();
+
+    let histogram = pool.install(|| {
+        let par = if grain > 0 {
+            data.par_chunks(grain)
+        } else {
+            let chunk_size = (data.len() + num_threads - 1) / num_threads;
+            data.par_chunks(chunk_size)
+        };
+
+        par.map(|chunk| {
+                let mut local_hist = [0u64; BINS];
+                for &val in chunk {
+                    local_hist[val as usize] += 1;
+                }
+                local_hist
+            })
+            .reduce(
+                || [0u64; BINS],
+                |mut acc, local| {
+                    for i in 0..BINS {
+                        acc[i] += local[i];
+                    }
+                    acc
+                },
+            )
+    });
+
+    let elapsed = start.elapsed().as_secs_f64();
+    (elapsed, histogram.to_vec())
+}
+
+// Check that sum(hist) == N
+fn check_correct(hist: &[u64], n: usize) -> bool {
+    let total: u64 = hist.iter().sum();
+    total as usize == n
+}
 
 fn main() {
-    println!("Histogram Controllability Benchmark");
-    println!("====================================\n");
-    println!("Testing programmer control over:");
-    println!("  1. Variable sharing (G-Atomic: shared atomic counters)");
-    println!("  2. Variable privacy (TL-Local: thread-local histograms)");
-    println!("  3. Thread affinity (core pinning)\n");
-    
-    // Generate test data
-    println!("Generating test data...");
-    let data_10m = generate_data(PROBLEM_SIZES[0]);
-    let data_100m = generate_data(PROBLEM_SIZES[1]);
-    println!("Data generation complete.\n");
-    
-    for &size in PROBLEM_SIZES {
-        let data = if size == PROBLEM_SIZES[0] { &data_10m } else { &data_100m };
-        
-        println!("===========================================");
-        println!("Problem Size: {} elements ({:.1}M)", size, size as f64 / 1_000_000.0);
-        println!("===========================================\n");
-        
-        run_strategy_1_g_atomic(data, size);
-        println!();
-        
-        run_strategy_2_tl_local(data, size);
-        println!();
-        
-        run_strategy_3_thread_affinity(data, size);
-        println!();
-    }
-    
-    print_controllability_summary();
-}
+    let args: Vec<String> = env::args().collect();
 
-/// random test data 
-fn generate_data(size: usize) -> Arc<Vec<u8>> {
-    let mut rng = rand::thread_rng();
-    Arc::new((0..size).map(|_| rng.gen::<u8>()).collect())
-}
-
-/// 1: G-Atomic (Global Atomic Counters)
-/// Explicit control over shared variables using atomic operations
-fn run_strategy_1_g_atomic(data: &Arc<Vec<u8>>, size: usize) {
-    println!("Strategy 1: G-Atomic (Global Atomic Counters)");
-    println!("----------------------------------------------");
-    println!("Control Feature: Explicit shared variable with atomic operations");
-    println!();
-    println!("Threads | Time (ms) | Throughput (M elem/s) | Speedup | Efficiency");
-    println!("--------|-----------|----------------------|---------|------------");
-    
-    let mut baseline_time = 0.0;
-    
-    for &num_threads in THREAD_COUNTS {
-        // Create shared atomic histogram - EXPLICIT CONTROL
-        let histogram: Arc<Vec<AtomicU64>> = Arc::new(
-            (0..NUM_BINS).map(|_| AtomicU64::new(0)).collect()
+    if args.len() < 5 {
+        eprintln!(
+            "usage: {} <strategy> <dist> <N> <T> [grain] [pad]",
+            args[0]
         );
-        
-        let start = Instant::now();
-        
-        if num_threads == 1 {
-            // Single-threaded baseline
-            let data_clone = Arc::clone(data);
-            for &val in data_clone.iter() {
-                histogram[val as usize].fetch_add(1, Ordering::Relaxed);
-            }
-        } else {
-            // Multi-threaded
-            let chunk_size = (size + num_threads - 1) / num_threads;
-            let handles: Vec<_> = (0..num_threads)
-                .map(|tid| {
-                    let data_clone = Arc::clone(data);
-                    let hist_clone = Arc::clone(&histogram);
-                    
-                    thread::spawn(move || {
-                        let start_idx = tid * chunk_size;
-                        let end_idx = ((tid + 1) * chunk_size).min(size);
-                        
-                        for i in start_idx..end_idx {
-                            let val = data_clone[i] as usize;
-                            hist_clone[val].fetch_add(1, Ordering::Relaxed);
-                        }
-                    })
-                })
-                .collect();
-            
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        }
-        
-        let duration = start.elapsed();
-        let time_ms = duration.as_secs_f64() * 1000.0;
-        let throughput = (size as f64 / 1_000_000.0) / duration.as_secs_f64();
-        
-        if num_threads == 1 {
-            baseline_time = time_ms;
-        }
-        
-        let speedup = baseline_time / time_ms;
-        let efficiency = (speedup / num_threads as f64) * 100.0;
-        
-        println!("{:7} | {:9.2} | {:20.2} | {:7.2} | {:9.1}%",
-            num_threads, time_ms, throughput, speedup, efficiency);
-        
-        // Verify correctness
-        let total: u64 = histogram.iter().map(|x| x.load(Ordering::Relaxed)).sum();
-        assert_eq!(total as usize, size, "Histogram count mismatch!");
+        eprintln!("  strategy: atomic | local");
+        eprintln!("  dist:     uniform | skewed");
+        eprintln!("  N:        number of elements (e.g. 10000000)");
+        eprintln!("  T:        threads (e.g. 1,2,4,8,16)");
+        eprintln!("  grain:    chunk size per task (0 = auto)");
+        eprintln!("  pad:      0 | 1 (atomic only; default 0)");
+        std::process::exit(1);
     }
-    
-}
 
-/// 2: TL-Local (Thread-Local Private Histograms)
-/// Control over variable privacy through ownership and manual reduction
-fn run_strategy_2_tl_local(data: &Arc<Vec<u8>>, size: usize) {
-    println!("Strategy 2: TL-Local (Thread-Local Private Histograms)");
-    println!("-------------------------------------------------------");
-    println!("Control Feature: Private variables per thread + manual reduction");
-    println!();
-    println!("Threads | Time (ms) | Throughput (M elem/s) | Speedup | Efficiency");
-    println!("--------|-----------|----------------------|---------|------------");
-    
-    let mut baseline_time = 0.0;
-    
-    for &num_threads in THREAD_COUNTS {
-        let start = Instant::now();
-        
-        if num_threads == 1 {
-            // Single-threaded baseline
-            let mut histogram = [0u64; NUM_BINS];
-            for &val in data.iter() {
-                histogram[val as usize] += 1;
-            }
-            
-            let duration = start.elapsed();
-            let time_ms = duration.as_secs_f64() * 1000.0;
-            baseline_time = time_ms;
-            let throughput = (size as f64 / 1_000_000.0) / duration.as_secs_f64();
-            
-            println!("{:7} | {:9.2} | {:20.2} | {:7.2} | {:9.1}%",
-                1, time_ms, throughput, 1.0, 100.0);
-            
-            let total: u64 = histogram.iter().sum();
-            assert_eq!(total as usize, size);
-        } else {
-            // Multi-threaded with private histograms - EXPLICIT PRIVACY CONTROL
-            let chunk_size = (size + num_threads - 1) / num_threads;
-            let handles: Vec<_> = (0..num_threads)
-                .map(|tid| {
-                    let data_clone = Arc::clone(data);
-                    
-                    thread::spawn(move || {
-                        // Private histogram - automatic through move semantics
-                        let mut local_hist = [0u64; NUM_BINS];
-                        
-                        let start_idx = tid * chunk_size;
-                        let end_idx = ((tid + 1) * chunk_size).min(size);
-                        
-                        for i in start_idx..end_idx {
-                            local_hist[data_clone[i] as usize] += 1;
-                        }
-                        
-                        local_hist
-                    })
-                })
-                .collect();
-            
-            // Manual reduction - EXPLICIT MERGE CONTROL
-            let mut global_histogram = [0u64; NUM_BINS];
-            for handle in handles {
-                let local_hist = handle.join().unwrap();
-                for i in 0..NUM_BINS {
-                    global_histogram[i] += local_hist[i];
-                }
-            }
-            
-            let duration = start.elapsed();
-            let time_ms = duration.as_secs_f64() * 1000.0;
-            let throughput = (size as f64 / 1_000_000.0) / duration.as_secs_f64();
-            let speedup = baseline_time / time_ms;
-            let efficiency = (speedup / num_threads as f64) * 100.0;
-            
-            println!("{:7} | {:9.2} | {:20.2} | {:7.2} | {:9.1}%",
-                num_threads, time_ms, throughput, speedup, efficiency);
-            
-            let total: u64 = global_histogram.iter().sum();
-            assert_eq!(total as usize, size);
-        }
+    let strategy = &args[1];
+    let dist = &args[2];
+    let n: usize = args[3].parse().expect("N must be a positive integer");
+    let t: usize = args[4].parse().expect("T must be a positive integer");
+    let grain: usize = if args.len() > 5 {
+        args[5].parse().unwrap_or(0)
+    } else {
+        0
+    };
+    let pad_flag_raw: i32 = if args.len() > 6 {
+        args[6].parse().unwrap_or(0)
+    } else {
+        0
+    };
+    let pad = pad_flag_raw != 0;
+    let affinity_raw: i32 = if args.len() > 7 {
+        args[7].parse().unwrap_or(0)
+    } else {
+        0
+    };
+    let affinity = affinity_raw != 0;
+
+    if n == 0 || t == 0 {
+        eprintln!("N and T must be positive.");
+        std::process::exit(1);
     }
-    
-    println!("\nControllability: Rust provides implicit privacy via ownership, requires manual reduction");
-}
 
-/// 3: Thread Affinity Control
-/// Control over thread-to-core assignment
-fn run_strategy_3_thread_affinity(data: &Arc<Vec<u8>>, size: usize) {
-    println!("Strategy 3: Thread Affinity Control");
-    println!("------------------------------------");
-    println!("Control Feature: Pin threads to specific CPU cores");
-    println!();
-    
-    // if core_affinity is available
-    let core_ids = core_affinity::get_core_ids();
-    if core_ids.is_none() {
-        println!("Core affinity not supported on this system.");
-        println!("Controllability: Requires external 'core_affinity' crate and platform support\n");
-        return;
+    // Generate input data (not timed)
+    let data = match dist.as_str() {
+        "uniform" => gen_uniform(n),
+        "skewed" => gen_skewed(n),
+        _ => {
+            eprintln!("unknown dist: {} (use uniform|skewed)", dist);
+            std::process::exit(1);
+        }
+    };
+
+    // Run the chosen strategy
+    let (elapsed, histogram) = match strategy.as_str() {
+        "atomic" => hist_atomic(&data, t, grain, pad, affinity),
+        "local" => hist_local(&data, t, grain, affinity),
+        _ => {
+            eprintln!("unknown strategy: {} (use atomic|local)", strategy);
+            std::process::exit(1);
+        }
+    };
+
+    let correct = check_correct(&histogram, n);
+    let pad_flag = if strategy == "atomic" && pad { 1 } else { 0 };
+    let affinity_flag = if affinity { 1 } else { 0 };
+
+    // CSV-style output (extended)
+    println!(
+        "hist,rayon,strategy={},dist={},N={},T={},grain={},pad={},affinity={},time,{:.6},sec",
+        strategy,
+        dist,
+        n,
+        t,
+        grain,
+        pad_flag,
+        affinity_flag,
+        elapsed
+    );
+    println!(
+        "hist,rayon,strategy={},dist={},N={},T={},grain={},pad={},affinity={},correct,{},boolean",
+        strategy,
+        dist,
+        n,
+        t,
+        grain,
+        pad_flag,
+        affinity_flag,
+        if correct { 1 } else { 0 }
+    );
+
+    if !correct {
+        std::process::exit(3);
     }
-    
-    let core_ids = core_ids.unwrap();
-    println!("Available CPU cores: {}", core_ids.len());
-    println!();
-    println!("Threads | Time (ms) | Throughput (M elem/s) | Speedup | Efficiency");
-    println!("--------|-----------|----------------------|---------|------------");
-    
-    let mut baseline_time = 0.0;
-    
-    for &num_threads in THREAD_COUNTS {
-        if num_threads > core_ids.len() {
-            println!("{:7} | Skipped (exceeds available cores)", num_threads);
-            continue;
-        }
-        
-        let histogram: Arc<Vec<AtomicU64>> = Arc::new(
-            (0..NUM_BINS).map(|_| AtomicU64::new(0)).collect()
-        );
-        
-        let start = Instant::now();
-        
-        // Always spawn threads (even for single thread) to avoid pinning main thread
-        let chunk_size = (size + num_threads - 1) / num_threads;
-        let handles: Vec<_> = (0..num_threads)
-            .map(|tid| {
-                let data_clone = Arc::clone(data);
-                let hist_clone = Arc::clone(&histogram);
-                let core_id = core_ids[tid];
-                
-                thread::spawn(move || {
-                    // EXPLICIT CORE PINNING CONTROL
-                    core_affinity::set_for_current(core_id);
-                    
-                    let start_idx = tid * chunk_size;
-                    let end_idx = ((tid + 1) * chunk_size).min(size);
-                    
-                    for i in start_idx..end_idx {
-                        let val = data_clone[i] as usize;
-                        hist_clone[val].fetch_add(1, Ordering::Relaxed);
-                    }
-                })
-            })
-            .collect();
-        
-        for handle in handles {
-            handle.join().unwrap();
-        }
-        
-        let duration = start.elapsed();
-        let time_ms = duration.as_secs_f64() * 1000.0;
-        let throughput = (size as f64 / 1_000_000.0) / duration.as_secs_f64();
-        
-        if num_threads == 1 {
-            baseline_time = time_ms;
-        }
-        
-        let speedup = baseline_time / time_ms;
-        let efficiency = (speedup / num_threads as f64) * 100.0;
-        
-        println!("{:7} | {:9.2} | {:20.2} | {:7.2} | {:9.1}%",
-            num_threads, time_ms, throughput, speedup, efficiency);
-        
-        let total: u64 = histogram.iter().map(|x| x.load(Ordering::Relaxed)).sum();
-        assert_eq!(total as usize, size);
-    }
-    
-}
-
-fn print_controllability_summary() {
-
 }
