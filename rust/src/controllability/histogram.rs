@@ -27,10 +27,10 @@ const BINS: usize = 256;
 #[repr(align(64))]
 struct PaddedAtomicU64(AtomicU64);
 
-// Global counter for thread ID assignment when using affinity
+// global counter for thread ID assignment, for affinity
 static THREAD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-// Thread affinity: Pin thread to specific core
+// pin thread to specific core
 fn set_thread_affinity() -> usize {
     let thread_id = THREAD_COUNTER.fetch_add(1, Ordering::SeqCst);
     let core_ids_result = core_affinity::get_core_ids();
@@ -44,12 +44,12 @@ fn set_thread_affinity() -> usize {
     thread_id
 }
 
-// Simple LCG RNG (deterministic, matching OpenMP)
+// LCG RNG 
 fn lcg_next(x: u32) -> u32 {
     x.wrapping_mul(1664525u32).wrapping_add(1013904223u32)
 }
 
-// Generate uniform distribution [0,255]
+// uniform distribution [0,255]
 fn gen_uniform(n: usize) -> Vec<u8> {
     let mut data = Vec::with_capacity(n);
     let mut x = 123456789u32;
@@ -60,7 +60,7 @@ fn gen_uniform(n: usize) -> Vec<u8> {
     data
 }
 
-// Generate skewed distribution: ~80% in first 20% bins (0..51)
+// skewed distribution: ~80% in first 20% bins (0..51)
 fn gen_skewed(n: usize) -> Vec<u8> {
     let mut data = Vec::with_capacity(n);
     let hot_bins = (BINS as f64 * 0.2) as u8; // 51
@@ -86,12 +86,8 @@ fn gen_skewed(n: usize) -> Vec<u8> {
 }
 
 // Strategy 1: Rayon Atomic (Shared Histogram)
-// Adds:
-//   - grain: chunk size (0 = auto)
-//   - pad:   if true, use cache-line padded bins
-//   - use_affinity: if true, pin threads to cores
 fn hist_atomic(data: &[u8], num_threads: usize, grain: usize, pad: bool, use_affinity: bool) -> (f64, Vec<u64>) {
-    // Reset counter for affinity
+
     if use_affinity {
         THREAD_COUNTER.store(0, Ordering::SeqCst);
     }
@@ -109,7 +105,7 @@ fn hist_atomic(data: &[u8], num_threads: usize, grain: usize, pad: bool, use_aff
     let start = Instant::now();
 
     let result: Vec<u64> = if pad {
-        // Padded atomic bins to reduce false sharing
+        // padded atomic bins to reduce false sharing
         let histogram: Vec<PaddedAtomicU64> = (0..BINS)
             .map(|_| PaddedAtomicU64(AtomicU64::new(0)))
             .collect();
@@ -137,7 +133,7 @@ fn hist_atomic(data: &[u8], num_threads: usize, grain: usize, pad: bool, use_aff
             .map(|x| x.0.load(Ordering::Relaxed))
             .collect()
     } else {
-        // Original contiguous atomic bins
+        //  contiguous atomic bins
         let histogram: Vec<AtomicU64> = (0..BINS)
             .map(|_| AtomicU64::new(0))
             .collect();
@@ -167,11 +163,8 @@ fn hist_atomic(data: &[u8], num_threads: usize, grain: usize, pad: bool, use_aff
 }
 
 // Strategy 2: Rayon Local (Thread-Local Histograms)
-// Adds:
-//   - grain: chunk size (0 = auto: roughly N / T)
-//   - use_affinity: if true, pin threads to cores
 fn hist_local(data: &[u8], num_threads: usize, grain: usize, use_affinity: bool) -> (f64, Vec<u64>) {
-    // Reset counter for affinity
+
     if use_affinity {
         THREAD_COUNTER.store(0, Ordering::SeqCst);
     }
@@ -218,7 +211,7 @@ fn hist_local(data: &[u8], num_threads: usize, grain: usize, use_affinity: bool)
     (elapsed, histogram.to_vec())
 }
 
-// Check that sum(hist) == N
+// sum(hist) == N
 fn check_correct(hist: &[u64], n: usize) -> bool {
     let total: u64 = hist.iter().sum();
     total as usize == n
@@ -268,7 +261,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Generate input data (not timed)
+    // generate input data 
     let data = match dist.as_str() {
         "uniform" => gen_uniform(n),
         "skewed" => gen_skewed(n),
@@ -278,7 +271,6 @@ fn main() {
         }
     };
 
-    // Run the chosen strategy
     let (elapsed, histogram) = match strategy.as_str() {
         "atomic" => hist_atomic(&data, t, grain, pad, affinity),
         "local" => hist_local(&data, t, grain, affinity),
@@ -292,7 +284,6 @@ fn main() {
     let pad_flag = if strategy == "atomic" && pad { 1 } else { 0 };
     let affinity_flag = if affinity { 1 } else { 0 };
 
-    // CSV-style output (extended)
     println!(
         "hist,rayon,strategy={},dist={},N={},T={},grain={},pad={},affinity={},time,{:.6},sec",
         strategy,

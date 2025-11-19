@@ -23,7 +23,7 @@ pub fn run_all_benchmarks() {
 fn spawn_join_benchmark() {
     for &num_threads in THREAD_COUNTS {
         for &iterations in ITERATIONS {
-            // Create thread pool with specific size (like OpenMP's omp_set_num_threads)
+            //  thread pool with specific size ( OpenMP's omp_set_num_threads)
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(num_threads)
                 .build()
@@ -33,7 +33,7 @@ fn spawn_join_benchmark() {
             
             pool.install(|| {
                 for _ in 0..iterations {
-                    // Use rayon::scope - creates parallel region like OpenMP
+                    // creates parallel region like OpenMP
                     rayon::scope(|s| {
                         for _ in 0..num_threads {
                             s.spawn(|_| {

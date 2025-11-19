@@ -26,12 +26,12 @@
 
 #define BINS 256
 
-// Simple LCG RNG (deterministic)
+// LCG RNG (deterministic)
 static inline uint32_t lcg_next(uint32_t x) {
     return x * 1664525u + 1013904223u;
 }
 
-// Generate uniform [0,255]
+// uniform [0,255]
 static void gen_uniform(uint8_t *data, long long N) {
     uint32_t x = 123456789u;
     for (long long i = 0; i < N; ++i) {
@@ -40,7 +40,7 @@ static void gen_uniform(uint8_t *data, long long N) {
     }
 }
 
-// Generate skewed distribution: ~80% in first 20% bins (0..51)
+// skewed, ~80% in first 20% bins (0..51)
 static void gen_skewed(uint8_t *data, long long N) {
     const int hot_bins = (int)(BINS * 0.2); // 51
     uint32_t x = 987654321u;
@@ -63,10 +63,10 @@ static void gen_skewed(uint8_t *data, long long N) {
 // padded atomic bins (reduce false sharing)
 typedef struct {
     unsigned long long value;
-    char pad[64 - sizeof(unsigned long long)]; // assume 64B cache line
+    char pad[64 - sizeof(unsigned long long)]; // crunchy1 64B cache line
 } padded_bin_t;
 
-// Strategy 1a: Global shared histogram with atomic increments (un-padded)
+// Strategy 1: Global shared histogram with atomic increments (un-padded)
 static double hist_atomic(const uint8_t *data,
                           unsigned long long *hist,
                           long long N,
@@ -105,7 +105,7 @@ static double hist_atomic(const uint8_t *data,
     return t1 - t0;
 }
 
-// Strategy 1b: Global shared histogram with atomic increments (padded bins)
+// Global shared histogram with atomic increments (padded bins)
 static double hist_atomic_padded(const uint8_t *data,
                                  padded_bin_t *hist_padded,
                                  long long N,
@@ -156,11 +156,11 @@ static double hist_local(const uint8_t *data,
 
     double t0 = omp_get_wtime();
     
-    // Use OpenMP's native proc_bind for thread affinity
+    // native proc_bind for thread affinity
     if (use_affinity) {
         #pragma omp parallel proc_bind(close)
         {
-            // Each thread gets its own local histogram on the stack
+            //each thread gets its own local histogram on the stack
             unsigned long long local_hist[BINS];
             for (int b = 0; b < BINS; ++b) local_hist[b] = 0ULL;
 
@@ -170,7 +170,7 @@ static double hist_local(const uint8_t *data,
                 local_hist[v] += 1ULL;
             }
 
-            // Merge local_hist into global hist
+            // merge 
             #pragma omp critical
             {
                 for (int b = 0; b < BINS; ++b) {
@@ -181,7 +181,7 @@ static double hist_local(const uint8_t *data,
     } else {
         #pragma omp parallel
         {
-            // Each thread gets its own local histogram on the stack
+            // each thread gets its own local histogram on the stack
             unsigned long long local_hist[BINS];
             for (int b = 0; b < BINS; ++b) local_hist[b] = 0ULL;
 
@@ -191,7 +191,7 @@ static double hist_local(const uint8_t *data,
                 local_hist[v] += 1ULL;
             }
 
-            // Merge local_hist into global hist
+            // merge
             #pragma omp critical
             {
                 for (int b = 0; b < BINS; ++b) {
@@ -205,7 +205,7 @@ static double hist_local(const uint8_t *data,
     return t1 - t0;
 }
 
-// Check that sum(hist) == N
+
 static int check_correct(const unsigned long long *hist, long long N) {
     unsigned long long total = 0;
     for (int b = 0; b < BINS; ++b) {
@@ -244,7 +244,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Configure OpenMP schedule via runtime
+    // configure OpenMP schedule 
     if (chunk < 0) chunk = 0;
     if (strcmp(sched, "dynamic") == 0) {
         omp_set_schedule(omp_sched_dynamic, chunk);
@@ -265,7 +265,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    // Generate input data (not timed)
+    //input data 
     if (strcmp(dist, "uniform") == 0) {
         gen_uniform(data, N);
     } else if (strcmp(dist, "skewed") == 0) {
@@ -276,12 +276,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Run the chosen strategy
     double elapsed = 0.0;
     if (strcmp(strategy, "atomic") == 0) {
         if (pad) {
             elapsed = hist_atomic_padded(data, hist_padded, N, T, affinity);
-            // Copy back to plain hist for checking/printing
+            // copy back to plain hist 
             for (int b = 0; b < BINS; ++b) {
                 hist[b] = hist_padded[b].value;
             }
@@ -298,8 +297,6 @@ int main(int argc, char **argv) {
     }
 
     int correct = check_correct(hist, N);
-
-    // CSV-style output (extended)
     printf("hist,openmp,strategy=%s,dist=%s,N=%lld,T=%d,sched=%s,chunk=%d,pad=%d,affinity=%d,time,%.6f,sec\n",
            strategy, dist, N, T, sched, chunk, pad, affinity, elapsed);
     printf("hist,openmp,strategy=%s,dist=%s,N=%lld,T=%d,sched=%s,chunk=%d,pad=%d,affinity=%d,correct,%d,boolean\n",

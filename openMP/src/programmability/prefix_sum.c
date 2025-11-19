@@ -18,10 +18,9 @@
 #define T (8)            // Number of threads (fixed at 8)
 
 int main(void) {
-    // Set number of threads
+
     omp_set_num_threads(T);
 
-    // Allocate memory
     long long *in  = (long long*) malloc(sizeof(long long) * N);
     long long *out = (long long*) malloc(sizeof(long long) * N);
     if (!in || !out) {
@@ -29,7 +28,6 @@ int main(void) {
         return 2;
     }
 
-    // Initialization: A[i] = 1 (for easy correctness check: exclusive scan should give out[i] = i)
     #pragma omp parallel
     {
         int tid = omp_get_thread_num();
@@ -40,7 +38,7 @@ int main(void) {
         }
     }
 
-    // Allocate arrays for per-block sums and offsets
+    // arrays for per-block sums and offsets
     long long *block_sum = (long long*) malloc(sizeof(long long) * T);
     long long *block_off = (long long*) malloc(sizeof(long long) * T);
     if (!block_sum || !block_off) {
@@ -57,12 +55,12 @@ int main(void) {
         long long beg = (N * tid) / T;
         long long end = (N * (tid + 1)) / T;
 
-        long long run = 0; // Running total within the block
+        long long run = 0; 
         for (long long i = beg; i < end; ++i) {
             out[i] = run;     // Exclusive scan: write prefix before adding current element
             run   += in[i];
         }
-        block_sum[tid] = run;  // Record total sum of this block
+        block_sum[tid] = run;  
     }
 
     // Phase 1.5: Serial prefix sum over block_sum[] to compute each block’s global offset
@@ -86,7 +84,7 @@ int main(void) {
         }
     }
 
-    // Correctness check: since in[i]=1, expected result is out[i] = i (exclusive prefix sum)
+
     int ok = 1;
     #pragma omp parallel
     {
@@ -98,14 +96,12 @@ int main(void) {
         for (long long i = beg; i < end; ++i) {
             if (out[i] != i) { local_ok = 0; break; }
         }
-        // Merge correctness flags from all threads
         #pragma omp critical
         {
             if (!local_ok) ok = 0;
         }
     }
 
-    // Print benchmark summary (for reporting; no timing)
     printf("bench=scan lang=openmp N=%lld T=%d correct=%d\n", (long long)N, T, ok);
 
     free(block_off); free(block_sum);
