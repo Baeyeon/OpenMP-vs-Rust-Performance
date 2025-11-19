@@ -60,7 +60,7 @@ static void gen_skewed(uint8_t *data, long long N) {
     }
 }
 
-// For padded atomic bins (to reduce false sharing)
+// padded atomic bins (reduce false sharing)
 typedef struct {
     unsigned long long value;
     char pad[64 - sizeof(unsigned long long)]; // assume 64B cache line
@@ -78,7 +78,7 @@ static double hist_atomic(const uint8_t *data,
 
     double t0 = omp_get_wtime();
     
-    // Use OpenMP's native proc_bind for thread affinity
+    // native proc_bind for thread affinity
     if (use_affinity) {
         #pragma omp parallel proc_bind(close)
         {

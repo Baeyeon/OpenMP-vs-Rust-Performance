@@ -42,7 +42,7 @@ rm -f "$OUTPUT_FILE"
 # Compile OpenMP version
 echo "Compiling OpenMP version..."
 cd openMP/src/control
-gcc -fopenmp -O2 control.c -o control_openmp
+gcc -O3 -march=native -fopenmp -std=c11 control.c -o control_openmp
 cd ../../..
 
 # ============================================
