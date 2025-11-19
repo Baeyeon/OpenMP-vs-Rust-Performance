@@ -1,41 +1,36 @@
-// Matrix Multiply (C = A * B) -- OpenMP Scalability benchmark
-// Optional light tiling (tile_bs > 0). A=1, B=2 => every C[i,j] should equal 2n.
+// OpenMP Matrix Multiply Scalability Benchmark (no reps, single run per (n,T))
+// A = 1, B = 2  => C[i,j] = 2 * n
+// Output format imitates the Rust version:
+//   === OpenMP Matrix Multiply Benchmark (Scalability) ===
+//   Testing problem sizes: [...]
+//   Testing thread counts: [...]
+//   ------------------------------------------------------
+//   Problem Size: n = 256
+//   ...
+//   Threads =  1 ... Time: xxxxs (baseline)
+//   Threads =  2 ... Time: xxxxs, Speedup: xx.x, Efficiency: yy.yy%
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <omp.h>
-#include <stdint.h>
+// ------------ 64-byte aligned allocation ------------
 
-// Portable 64-byte-aligned allocation: try aligned_alloc/posix_memalign, fallback to malloc
-static void* alloc64(size_t nbytes) {
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-    size_t aligned = (nbytes + 63u) & ~((size_t)63u);
-    void* p = aligned_alloc(64, aligned);
-    if (!p) p = malloc(nbytes);
-    return p;
-#elif defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
-    void* p = NULL;
-    if (posix_memalign(&p, 64, nbytes) != 0) p = NULL;
-    if (!p) p = malloc(nbytes);
-    return p;
-#else
-    return malloc(nbytes);
-#endif
-}
-
+// Initialize A=1, B=2
+// (initialize matrices A and B with constant values)
 static void init_ones(double *A, double *B, int n) {
     #pragma omp parallel for schedule(static)
     for (long long i = 0; i < (long long)n*n; ++i) {
-        A[i] = 1.0; B[i] = 2.0;
+        A[i] = 1.0;
+        B[i] = 2.0;
     }
 }
 
+// Set C to all zeros
 static void zero_matrix(double *C, int n) {
     #pragma omp parallel for schedule(static)
-    for (long long i = 0; i < (long long)n*n; ++i) C[i] = 0.0;
+    for (long long i = 0; i < (long long)n*n; ++i) {
+        C[i] = 0.0;
+    }
 }
 
+// Naive matrix multiply: C = A * B
 static void mm_naive(double *A, double *B, double *C, int n) {
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i = 0; i < n; ++i) {
@@ -44,34 +39,12 @@ static void mm_naive(double *A, double *B, double *C, int n) {
             for (int k = 0; k < n; ++k) {
                 sum += A[(long long)i*n + k] * B[(long long)k*n + j];
             }
-            C[(long long)i*n + j] += sum;
+            C[(long long)i*n + j] = sum;
         }
     }
 }
 
-static void mm_tiled(double *A, double *B, double *C, int n, int bs) {
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int ii = 0; ii < n; ii += bs) {
-        for (int jj = 0; jj < n; jj += bs) {
-            for (int kk = 0; kk < n; kk += bs) {
-                int iimax = (ii + bs < n) ? (ii + bs) : n;
-                int jjmax = (jj + bs < n) ? (jj + bs) : n;
-                int kkmax = (kk + bs < n) ? (kk + bs) : n;
-                for (int i = ii; i < iimax; ++i) {
-                    for (int j = jj; j < jjmax; ++j) {
-                        double sum = 0.0;
-                        for (int k = kk; k < kkmax; ++k) {
-                            sum += A[(long long)i*n + k] * B[(long long)k*n + j];
-                        }
-                        C[(long long)i*n + j] += sum;
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Correctness: check all C entries are close to `target`
+// Correctness check: whether all elements of C are close to `target`
 static int check_all_equal(const double *C, int n, double target, double tol) {
     int ok = 1;
     #pragma omp parallel
@@ -80,7 +53,9 @@ static int check_all_equal(const double *C, int n, double target, double tol) {
         #pragma omp for schedule(static)
         for (long long idx = 0; idx < (long long)n*n; ++idx) {
             if (!local_ok) continue;
-            if (fabs(C[idx] - target) > tol) local_ok = 0;
+            if (fabs(C[idx] - target) > tol) {
+                local_ok = 0;
+            }
         }
         if (!local_ok) {
             #pragma omp critical
@@ -90,59 +65,77 @@ static int check_all_equal(const double *C, int n, double target, double tol) {
     return ok;
 }
 
-static double median_of(double *arr, int m) {
-    for (int i = 1; i < m; i++) {
-        double v = arr[i]; int j = i - 1;
-        while (j >= 0 && arr[j] > v) { arr[j+1] = arr[j]; j--; }
-        arr[j+1] = v;
-    }
-    return arr[m/2];
-}
+int main(void) {
+    // Problem size set and thread count set (same as Rust version)
+    const int Ns[] = {256, 512, 1024, 1536, 2048};
+    const int n_cnt = (int)(sizeof(Ns) / sizeof(Ns[0]));
 
-int main(int argc, char** argv) {
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s <n> <T> [tile_bs=0] [reps=5]\n", argv[0]);
-        return 1;
-    }
-    const int n    = atoi(argv[1]);
-    const int T    = atoi(argv[2]);
-    const int bs   = (argc >= 4) ? atoi(argv[3]) : 0;
-    const int reps = (argc >= 5) ? atoi(argv[4]) : 5;
+    const int Ts[] = {1, 2, 4, 8, 16};
+    const int t_cnt = (int)(sizeof(Ts) / sizeof(Ts[0]));
 
-    omp_set_num_threads(T);
+    // Top header
+    printf("=== OpenMP Matrix Multiply Benchmark (Scalability) ===\n");
+    printf("Testing problem sizes: [256, 512, 1024, 1536, 2048]\n");
+    printf("Testing thread counts: [1, 2, 4, 8, 16]\n\n");
 
-    size_t bytes = (size_t)n * (size_t)n * sizeof(double);
-    double *A = (double*) alloc64(bytes);
-    double *B = (double*) alloc64(bytes);
-    double *C = (double*) alloc64(bytes);
-    if (!A || !B || !C) { fprintf(stderr, "malloc failed\n"); return 2; }
+    for (int ni = 0; ni < n_cnt; ++ni) {
+        int n = Ns[ni];
 
-    init_ones(A, B, n);
-    zero_matrix(C, n);
+        printf("============================================================\n");
+        printf("Problem Size: n = %d\n", n);
+        printf("============================================================\n\n");
 
-    // Warm-up (not timed)
-    if (bs > 0) mm_tiled(A, B, C, n, bs); else mm_naive(A, B, C, n);
-    zero_matrix(C, n);
+        size_t bytes = (size_t)n * (size_t)n * sizeof(double);
+        double *A = (double*) alloc64(bytes);
+        double *B = (double*) alloc64(bytes);
+        double *C = (double*) alloc64(bytes);
+        if (!A || !B || !C) {
+            fprintf(stderr, "malloc failed for n=%d\n", n);
+            return 2;
+        }
 
-    // Repeat and take median time
-    double *times = (double*) malloc(sizeof(double) * reps);
-    for (int r = 0; r < reps; ++r) {
+        init_ones(A, B, n);
         zero_matrix(C, n);
-        double t0 = omp_get_wtime();
-        if (bs > 0) mm_tiled(A, B, C, n, bs); else mm_naive(A, B, C, n);
-        double t1 = omp_get_wtime();
-        times[r] = t1 - t0;
+
+        double t_base = -1.0;   // t(n,1)
+
+        for (int ti = 0; ti < t_cnt; ++ti) {
+            int T = Ts[ti];
+            omp_set_num_threads(T);
+
+            // Time a single run
+            zero_matrix(C, n);
+            double t0 = omp_get_wtime();
+            mm_naive(A, B, C, n);
+            double t1 = omp_get_wtime();
+            double t = t1 - t0;
+
+            // Correctness check for this run
+            int ok = check_all_equal(C, n, 2.0 * (double)n, 1e-9);
+
+            if (ti == 0) {
+                // baseline: T = 1
+                printf("Threads = %2d ... Time: %.6lfs (baseline)%s\n",
+                       T, t, ok ? "" : "  [INCORRECT]");
+                t_base = t;
+            } else {
+                double speedup    = t_base / t;
+                double efficiency = (speedup / (double)T) * 100.0; // percentage
+
+                printf("Threads = %2d ... Time: %.6lfs, "
+                       "Speedup: %.2lfx, Efficiency: %.2lf%%%s\n",
+                       T, t, speedup, efficiency,
+                       ok ? "" : "  [INCORRECT]");
+            }
+            fflush(stdout);  // print progressively while running
+        }
+
+        printf("\n");  // blank line after each problem size
+
+        free(C);
+        free(B);
+        free(A);
     }
-    double t_med = median_of(times, reps);
 
-    int ok = check_all_equal(C, n, 2.0 * (double)n, 1e-9);
-
-    // CSV-style output:
-    // time: median run time (sec) for the core multiplication
-    // correct: 1 if A=1, B=2 produced C==2n everywhere
-    printf("mm,openmp,%d,%d,time,%.6f,sec\n", n, T, t_med);
-    printf("mm,openmp,%d,%d,correct,%d,boolean\n", n, T, ok);
-
-    free(times); free(C); free(B); free(A);
-    return ok ? 0 : 3;
+    return 0;
 }
