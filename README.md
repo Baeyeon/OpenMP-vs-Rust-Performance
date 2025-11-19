@@ -2,6 +2,15 @@
 
 A comprehensive comparison of programmability, scalability, runtime overhead, and control between OpenMP and Rust parallel computing approaches.
 
+## Benchmarks Overview
+
+This repository includes four categories of parallel computing benchmarks:
+
+- **Control/Controllability** - Histogram computation testing shared/private variables, scheduling strategies, false sharing mitigation, and thread affinity control
+- **Runtime Overhead** - Empty parallel region measurements to quantify parallelization overhead
+- **Programmability** - Parallel prefix sum implementation comparing code complexity and development effort
+- **Scalability** - Matrix multiplication (NxN) testing performance scaling across thread counts
+
 ## Repository Structure
 
 ```
