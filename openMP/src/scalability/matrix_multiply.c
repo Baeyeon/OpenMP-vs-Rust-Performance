@@ -1,6 +1,6 @@
 // OpenMP Matrix Multiply Scalability Benchmark (no reps, single run per (n,T))
 // A = 1, B = 2  => C[i,j] = 2 * n
-// Output format imitates the Rust version:
+// Output format mimics the Rust version:
 //   === OpenMP Matrix Multiply Benchmark (Scalability) ===
 //   Testing problem sizes: [...]
 //   Testing thread counts: [...]
@@ -10,10 +10,31 @@
 //   Threads =  1 ... Time: xxxxs (baseline)
 //   Threads =  2 ... Time: xxxxs, Speedup: xx.x, Efficiency: yy.yy%
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <omp.h>
+#include <stdint.h>
+
 // ------------ 64-byte aligned allocation ------------
 
+static void* alloc64(size_t nbytes) {
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+    size_t aligned = (nbytes + 63u) & ~((size_t)63u);
+    void* p = aligned_alloc(64, aligned);
+    if (!p) p = malloc(nbytes);
+    return p;
+#elif defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+    void* p = NULL;
+    if (posix_memalign(&p, 64, nbytes) != 0) p = NULL;
+    if (!p) p = malloc(nbytes);
+    return p;
+#else
+    return malloc(nbytes);
+#endif
+}
+
 // Initialize A=1, B=2
-// (initialize matrices A and B with constant values)
 static void init_ones(double *A, double *B, int n) {
     #pragma omp parallel for schedule(static)
     for (long long i = 0; i < (long long)n*n; ++i) {
@@ -22,7 +43,7 @@ static void init_ones(double *A, double *B, int n) {
     }
 }
 
-// Set C to all zeros
+// Zero out C
 static void zero_matrix(double *C, int n) {
     #pragma omp parallel for schedule(static)
     for (long long i = 0; i < (long long)n*n; ++i) {
@@ -30,7 +51,7 @@ static void zero_matrix(double *C, int n) {
     }
 }
 
-// Naive matrix multiply: C = A * B
+// Naive matrix multiply C = A * B
 static void mm_naive(double *A, double *B, double *C, int n) {
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i = 0; i < n; ++i) {
@@ -44,7 +65,7 @@ static void mm_naive(double *A, double *B, double *C, int n) {
     }
 }
 
-// Correctness check: whether all elements of C are close to `target`
+// Correctness check: whether all elements of C are close to target
 static int check_all_equal(const double *C, int n, double target, double tol) {
     int ok = 1;
     #pragma omp parallel
@@ -66,7 +87,7 @@ static int check_all_equal(const double *C, int n, double target, double tol) {
 }
 
 int main(void) {
-    // Problem size set and thread count set (same as Rust version)
+    // Problem sizes and thread-count sets (kept consistent with the Rust version)
     const int Ns[] = {256, 512, 1024, 1536, 2048};
     const int n_cnt = (int)(sizeof(Ns) / sizeof(Ns[0]));
 
@@ -110,27 +131,27 @@ int main(void) {
             double t1 = omp_get_wtime();
             double t = t1 - t0;
 
-            // Correctness check for this run
+            // Correctness check using the result of this run
             int ok = check_all_equal(C, n, 2.0 * (double)n, 1e-9);
 
             if (ti == 0) {
                 // baseline: T = 1
+                t_base = t;
                 printf("Threads = %2d ... Time: %.6lfs (baseline)%s\n",
                        T, t, ok ? "" : "  [INCORRECT]");
-                t_base = t;
             } else {
                 double speedup    = t_base / t;
-                double efficiency = (speedup / (double)T) * 100.0; // percentage
+                double efficiency = (speedup / (double)T) * 100.0; // Percentage
 
                 printf("Threads = %2d ... Time: %.6lfs, "
                        "Speedup: %.2lfx, Efficiency: %.2lf%%%s\n",
                        T, t, speedup, efficiency,
                        ok ? "" : "  [INCORRECT]");
             }
-            fflush(stdout);  // print progressively while running
+            fflush(stdout);  // Print as we go
         }
 
-        printf("\n");  // blank line after each problem size
+        printf("\n");  // Print a blank line after each n
 
         free(C);
         free(B);
